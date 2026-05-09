@@ -39,19 +39,19 @@ class SmoothRewardWrapper:
         d_throttle = abs(throttle - float(self.prev_action[1]))
 
         # Smoothness shaping.
-        reward -= 0.08 * d_steer
-        reward -= 0.03 * d_throttle
+        reward -= 0.8 * d_steer
+        reward -= 0.3 * d_throttle
 
         # Strong safety shaping.
         if info.get("out_of_road", False):
-            reward -= 2.5
+            reward -= 25
         if info.get("crash", False):
-            reward -= 3.0
+            reward -= 50
 
         # Small bonus for maintaining motion.
         if isinstance(obs, (list, tuple, np.ndarray)) and len(obs) >= 4:
             speed = float(obs[3])
-            reward += 0.03 * np.clip(speed, 0.0, 1.2)
+            reward += 0.15 * np.clip(speed, 0.0, 1.2)
 
         self.prev_action[0] = steer
         self.prev_action[1] = throttle

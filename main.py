@@ -46,6 +46,9 @@ def main():
     game.subscribe_logger(ActionLogger(log_filename))
     game.start()
 
-
 if __name__ == "__main__":
     main()
+
+# for i in range(20):
+#     print(f"Starting game instance {i}...")
+#     main()
