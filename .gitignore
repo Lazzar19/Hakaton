@@ -6,6 +6,6 @@ __pycache__/
 *.pyc
 *.pyo
 
-migrate_logs.py/
-rl_train.py/
+migrate_logs.py
+rl_train.py
 
