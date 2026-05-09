@@ -30,11 +30,20 @@ class Solution:
         steer = self._lane_steering(obs)
         throttle = self._speed_control(obs, info)
 
-        steer = self._smooth(steer, self._prev_steer, alpha=0.18)
-        throttle = self._smooth(throttle, self._prev_throttle, alpha=0.22)
+        throttle = self._speed_control(obs, info)
+
+        steer = self._smooth(steer, self._prev_steer, alpha=0.22)
+
 
         self._prev_steer = steer
         self._prev_throttle = throttle
+
+        print(
+            f"speed={self._extract_speed(obs):.2f} | "
+            f"lane={obs[8]:.2f} | "
+            f"nav={obs[10]:.2f}"
+        )
+
 
         return [float(np.clip(steer, -1.0, 1.0)), float(np.clip(throttle, -1.0, 1.0))]
 
@@ -54,24 +63,44 @@ class Solution:
         return steer * min(1.0, max(0.3, abs(error) * 2.5))
 
     def _speed_control(self, obs, info):
-        if info.get("crash", False) or info.get("out_of_road", False):
-            return -1.0
 
+        if info.get("crash", False):
+            return -1.0
+        
+        if info.get("out_of_road", False):
+            return -0.1
+        
         speed = self._extract_speed(obs)
-        desired_speed = 0.45
+
+        nav_direction = 0.0
+        if obs.shape[0] >= 12:
+            nav_direction = abs(float(obs[10]))
+
+        desired_speed = 3.0
+
+        if nav_direction > 0.12:
+            desired_speed = 0.5
+
+        if nav_direction > 0.25:
+            desired_speed = 0.15
 
         if self._obstacle_ahead(obs):
-            # If there is something close in front, brake.
-            return -0.8
+            return -0.9
 
-        throttle = (desired_speed - speed) * 0.9
+        throttle = (desired_speed - speed) * 1.3
         return float(np.clip(throttle, -1.0, 1.0))
+
 
     def _extract_speed(self, obs):
         # Speed is part of the state observation and is normalized to [0, 1].
         if obs.shape[0] >= 4:
             return float(obs[3])
         return 0.0
+    
+
+
+
+
 
     def _obstacle_ahead(self, obs):
         if obs.shape[0] < 240:
@@ -80,9 +109,11 @@ class Solution:
         lidar = obs[-240:]
         # The lidar vector starts at the vehicle head and goes clockwise.
         # Use the narrow front sector of +/- 15 rays.
-        center = 0
+
         sector = np.concatenate((lidar[-15:], lidar[:15]))
-        return float(np.min(sector)) < 0.28
+        return float(np.min(sector)) < 0.29
+    
+
 
     def _smooth(self, target, previous, alpha):
         return previous + alpha * (target - previous)
