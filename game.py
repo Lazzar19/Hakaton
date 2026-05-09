@@ -37,10 +37,11 @@ CONFIG = {
         "traffic_density": 0.3,
         "num_scenarios": 1,
         "start_seed": 0,
-        "map": "SOC",  # Straight, rOundabout, Curve
+        "map": "CCC",  # Straight, rOundabout, Curve
         "accident_prob": 0.0,
         "decision_repeat": 1,
     },
+    "RL_MODEL_PATH": "models/ppo_metadrive",
 }
 
 
