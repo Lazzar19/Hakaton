@@ -1,0 +1,8 @@
+ep=0000 | frames= 1000 | total_r= +7.429 | avg_r=+0.0074 | avg_spd=0.366 | turns=28.4% | eps=0.0668 | buf=  999 | end=checkpoint
+ep=0001 | frames= 1000 | total_r= +3.639 | avg_r=+0.0036 | avg_spd=0.376 | turns=19.6% | eps=0.0500 | buf= 1999 | end=checkpoint
+ep=0002 | frames= 1000 | total_r=-50.674 | avg_r=-0.0507 | avg_spd=0.205 | turns=95.4% | eps=0.0500 | buf= 2997 | end=checkpoint
+ep=0003 | frames= 1000 | total_r=-100.241 | avg_r=-0.1002 | avg_spd=0.088 | turns=96.4% | eps=0.0500 | buf= 3997 | end=checkpoint
+ep=0004 | frames= 1000 | total_r= +3.334 | avg_r=+0.0033 | avg_spd=0.331 | turns=81.1% | eps=0.0500 | buf= 4995 | end=checkpoint
+ep=0005 | frames= 1000 | total_r=-14.478 | avg_r=-0.0145 | avg_spd=0.293 | turns=90.4% | eps=0.0500 | buf= 5994 | end=checkpoint
+ep=0006 | frames= 1000 | total_r=-72.050 | avg_r=-0.0721 | avg_spd=0.239 | turns=68.6% | eps=0.0500 | buf= 6994 | end=checkpoint
+ep=0140 | frames= 1000 | total_r=-13.286 | avg_r=-0.0133 | avg_spd=0.218 | turns=62.0% | eps=0.0500 | buf=50000 | end=checkpoint

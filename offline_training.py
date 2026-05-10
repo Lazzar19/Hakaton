@@ -1,40 +1,40 @@
 import os
 import json
 import math
+import random
 import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from collections import Counter
 
-LOG_DIR    = "logs"
-MODEL_PATH = os.path.join(LOG_DIR, "advanced_model.pt")
-DEVICE     = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# --- KONFIGURACIJA ---
+LOG_DIR     = "logs"
+MODEL_PATH  = os.path.join(LOG_DIR, "advanced_model.pt")
+DEVICE      = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Mora biti identično sa solution.py
 STATE_DIM    = 11
 STACK_SIZE   = 4
-INPUT_DIM    = STATE_DIM * STACK_SIZE  # 44
+INPUT_DIM    = STATE_DIM * STACK_SIZE # 44
 ACTION_DIM   = 9
-REWARD_SCALE = 40.0
-
+VAL_SPLIT    = 0.2  # 20% fajlova ide u validaciju
 
 # =========================================================
-# DUELING DQN — identična arhitektura kao u solution.py
+# MODEL: Dueling DQN sa regularizacijom
 # =========================================================
-
 class DuelingDQN(nn.Module):
-
-    def __init__(self, input_dim=INPUT_DIM, action_dim=ACTION_DIM):
+    def __init__(self, input_dim=INPUT_DIM, action_dim=ACTION_DIM, dropout=0.3):
         super().__init__()
 
         self.feature = nn.Sequential(
             nn.Linear(input_dim, 256),
             nn.LayerNorm(256),
             nn.ReLU(),
+            nn.Dropout(dropout),
             nn.Linear(256, 256),
             nn.LayerNorm(256),
-            nn.ReLU()
+            nn.ReLU(),
+            nn.Dropout(dropout)
         )
 
         self.value_stream = nn.Sequential(
@@ -50,248 +50,172 @@ class DuelingDQN(nn.Module):
         )
 
     def forward(self, x):
-        f   = self.feature(x)
+        f = self.feature(x)
         val = self.value_stream(f)
         adv = self.advantage_stream(f)
         return val + (adv - adv.mean(dim=1, keepdim=True))
 
-
 # =========================================================
-# DATASET
+# DATASET: Sa podrškom za file-split
 # =========================================================
-
 class MetaDriveDataset(Dataset):
-
-    def __init__(self, log_dir):
+    def __init__(self, log_dir, file_list):
         self.samples = []
-
-        self.action_map = {
-            0: (0.0,   0.4),
-            1: (-0.3,  0.4),
-            2: (0.3,   0.4),
-            3: (0.0,  -0.7),
-            4: (-0.55, 0.2),
-            5: (0.55,  0.2),
-            6: (0.0,   0.75),
-            7: (-0.8, -0.2),
-            8: (0.8,  -0.2)
-        }
-
+        
         def safe_f(val, default=0.0):
             try:
                 res = float(val)
                 return res if np.isfinite(res) else default
-            except:
-                return default
+            except: return default
 
-        if not os.path.exists(log_dir):
-            return
+        for file in file_list:
+            path = os.path.join(log_dir, file)
+            with open(path, "r") as f:
+                try: data = json.load(f)
+                except: continue
 
-        skipped_old = 0
-
-        for file in os.listdir(log_dir):
-            if not file.endswith(".json"):
+            if len(data) < 5 or "asymmetry" not in data[0]:
                 continue
 
-            with open(os.path.join(log_dir, file), "r") as f:
-                try:
-                    data = json.load(f)
-                except:
-                    continue
-
-            if len(data) < 5:
-                continue
-
-            # Preskoči stare logove bez novih polja
-            if "asymmetry" not in data[0]:
-                skipped_old += 1
-                continue
-
-            for i in range(3, len(data) - 1):
-
-                def get_state(idx):
-                    d = data[idx]
+            for i in range(STACK_SIZE - 1, len(data) - 1):
+                def get_state(idx, _data=data):
+                    d = _data[idx]
                     return [
                         np.clip(safe_f(d.get("speed")) / 30.0, 0, 1),
                         np.clip(safe_f(d.get("lane_offset")), -1, 1),
                         np.clip(safe_f(d.get("front_distance", 1.0)), 0, 1),
-                        np.clip(safe_f(d.get("left_distance", 1.0)), 0, 1),
+                        np.clip(safe_f(d.get("left_distance",  1.0)), 0, 1),
                         np.clip(safe_f(d.get("right_distance", 1.0)), 0, 1),
                         np.clip(abs(safe_f(d.get("lane_offset"))), 0, 1),
                         1.0,
                         np.clip(safe_f(d.get("asymmetry", 0.0)), -1, 1),
                         np.clip(safe_f(d.get("heading_error", 0.0)), -1, 1),
-                        0.0,  # navi[0]
-                        0.0,  # navi[1]
+                        0.0, 0.0
                     ]
 
-                # Temporal stack od 4 frejma
-                s  = np.array(
-                    [v for j in range(i - 3, i + 1) for v in get_state(j)],
-                    dtype=np.float32
-                )
-                ns = np.array(
-                    [v for j in range(i - 2, i + 2) for v in get_state(j)],
-                    dtype=np.float32
-                )
-
-                # Akcija — nađi najbližu iz action_map
-                l_s = safe_f(data[i].get("action_steering"))
-                l_t = safe_f(data[i].get("action_throttle"))
-                act = min(
-                    self.action_map.keys(),
-                    key=lambda k: (
-                        (self.action_map[k][0] - l_s) ** 2
-                        + (self.action_map[k][1] - l_t) ** 2
-                    )
-                )
-
-                # Reward — već normalizovan u solution.py na [-1, 1]
+                s = np.array([v for j in range(i-(STACK_SIZE-1), i+1) for v in get_state(j)], dtype=np.float32)
+                ns = np.array([v for j in range(i-(STACK_SIZE-2), i+2) for v in get_state(j)], dtype=np.float32)
+                
+                act = int(data[i].get("action", 0))
                 rew = np.clip(safe_f(data[i].get("reward")), -1.0, 1.0)
+                done = bool(data[i].get("terminated"))
 
-                self.samples.append((
-                    s, act, rew, ns,
-                    bool(data[i].get("terminated"))
-                ))
+                self.samples.append((s, act, rew, ns, done))
 
-        if skipped_old > 0:
-            print(f"[INFO] Preskočeno {skipped_old} starih JSON fajlova (nema asymmetry polje)")
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, idx):
-        return self.samples[idx]
-
+    def __len__(self): return len(self.samples)
+    def __getitem__(self, idx): return self.samples[idx]
 
 # =========================================================
-# TRENING
+# TRENING PROCES
 # =========================================================
-
 def train():
-    dataset = MetaDriveDataset(LOG_DIR)
-    print(f"Učitano {len(dataset)} primjera.")
-
-    if len(dataset) == 0:
-        print("Nema podataka za trening. Pokreni agenta da skupi nove logove.")
+    # 1. SPLIT FAJLOVA (Srce borbe protiv overfittinga)
+    all_files = [f for f in os.listdir(LOG_DIR) if f.endswith(".json")]
+    if not all_files:
+        print("Nema logova u folderu!")
         return
+    
+    random.shuffle(all_files)
+    split_idx = int(len(all_files) * VAL_SPLIT)
+    val_files = all_files[:split_idx]
+    train_files = all_files[split_idx:]
 
-    # Distribucija akcija
-    actions = [s[1] for s in dataset.samples]
-    rewards = [s[2] for s in dataset.samples]
-    print("Distribucija akcija:", Counter(actions))
-    print(f"Avg reward: {sum(rewards)/len(rewards):.4f}")
-    print(f"Pozitivnih: {sum(1 for r in rewards if r > 0)} | "
-          f"Negativnih: {sum(1 for r in rewards if r < 0)}")
+    print(f"Učitavam {len(train_files)} fajlova za trening i {len(val_files)} za validaciju...")
+    train_ds = MetaDriveDataset(LOG_DIR, train_files)
+    val_ds   = MetaDriveDataset(LOG_DIR, val_files)
 
-    # Provjeri i očisti korumpirani model
-    if os.path.exists(MODEL_PATH):
-        try:
-            test_model = DuelingDQN().to(DEVICE)
-            test_model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
-            if torch.isnan(test_model.feature[0].weight).any():
-                print("Stari model je korumpiran (NaN). Brišem ga.")
-                os.remove(MODEL_PATH)
-        except Exception as e:
-            print(f"Model nije kompatibilan ({e}). Brišem ga.")
-            os.remove(MODEL_PATH)
+    # 2. SAMPLER ZA BALANS AKCIJA
+    train_actions = [s[1] for s in train_ds.samples]
+    counts = Counter(train_actions)
+    weights = [1.0 / counts[a] for a in train_actions]
+    sampler = WeightedRandomSampler(weights, len(weights))
 
-    # Model i target net
-    model = DuelingDQN().to(DEVICE)
-    target_model = DuelingDQN().to(DEVICE)
+    train_loader = DataLoader(train_ds, batch_size=128, sampler=sampler)
+    val_loader   = DataLoader(val_ds, batch_size=128, shuffle=False)
 
-    def reset_weights(m):
-        if isinstance(m, nn.Linear):
-            nn.init.orthogonal_(m.weight)
-            if m.bias is not None:
-                m.bias.data.fill_(0.01)
+    # 3. MODEL I OPTIMIZACIJA
+    model = DuelingDQN(dropout=0.3).to(DEVICE)
+    target_net = DuelingDQN().to(DEVICE)
+    target_net.load_state_dict(model.state_dict())
 
-    model.apply(reset_weights)
-
-    if os.path.exists(MODEL_PATH):
-        model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
-        print("Nastavak treninga od postojećeg modela.")
-
-    target_model.load_state_dict(model.state_dict())
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    optimizer = torch.optim.Adam(model.parameters(), lr=3e-4, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=3, factor=0.5)
     criterion = nn.HuberLoss()
 
-    # WeightedRandomSampler za balansiranje akcija
-    action_counts = Counter(actions)
-    total         = len(dataset)
-    sample_weights = [
-        total / (len(action_counts) * action_counts[s[1]])
-        for s in dataset.samples
-    ]
-    sampler = WeightedRandomSampler(
-        sample_weights, num_samples=total, replacement=True
-    )
+    best_val_loss = float('inf')
+    patience_counter = 0
+    max_patience = 7
 
-    loader     = DataLoader(dataset, batch_size=64, sampler=sampler)
-    num_batches = math.ceil(total / 64)
-    tau         = 0.005  # soft update faktor
+    print(f"Početak treninga na {DEVICE}...")
 
-    model.train()
+    for epoch in range(50):
+        # --- TRAIN MODE ---
+        model.train()
+        train_loss = 0
+        for s, a, r, ns, d in train_loader:
+            s, a, r, ns, d = s.to(DEVICE).float(), a.to(DEVICE).long(), r.to(DEVICE).float(), ns.to(DEVICE).float(), d.to(DEVICE).float()
+            
+            # Augmentacija: Dodavanje blagog šuma na ulazne senzore (osim 1.0 markera)
+            noise = (torch.randn_like(s) * 0.005).to(DEVICE)
+            s = s + noise
 
-    for epoch in range(30):
-        total_loss   = 0.0
-        q_vals_list  = []
-        target_list  = []
-        reward_list  = []
-
-        for s, a, r, ns, d in loader:
-            s  = s.to(DEVICE).float()
-            a  = a.to(DEVICE).long()
-            r  = r.to(DEVICE).float()
-            ns = ns.to(DEVICE).float()
-            d  = d.to(DEVICE).float()
-
-            q_vals = model(s).gather(1, a.unsqueeze(1)).squeeze(1)
-
+            q_values = model(s).gather(1, a.unsqueeze(1)).squeeze(1)
             with torch.no_grad():
-                # Double DQN: policy net bira akciju, target net procjenjuje
                 next_actions = model(ns).argmax(1)
-                max_next_q   = target_model(ns).gather(
-                    1, next_actions.unsqueeze(1)
-                ).squeeze(1)
-                max_next_q = torch.clamp(max_next_q, -10, 10)
-
-                # Gamma identičan sa solution.py (0.99)
-                target = (r + (1.0 - d) * 0.99 * max_next_q).float()
-
-            loss = criterion(q_vals, target)
-
+                max_next_q = target_net(ns).gather(1, next_actions.unsqueeze(1)).squeeze(1)
+                target = r + (1 - d.float()) * 0.99 * max_next_q
+            
+            loss = criterion(q_values, target)
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
+            train_loss += loss.item()
 
-            # Soft target update
-            for tp, pp in zip(target_model.parameters(), model.parameters()):
-                tp.data.copy_(tau * pp.data + (1.0 - tau) * tp.data)
+        # --- VALIDATION MODE ---
+        model.eval()
+        val_loss = 0
+        with torch.no_grad():
+            for s, a, r, ns, d in val_loader:
+                s, a, r, ns, d = s.to(DEVICE).float(), a.to(DEVICE).long(), r.to(DEVICE).float(), ns.to(DEVICE).float(), d.to(DEVICE).float()
+                q_v = model(s).gather(1, a.unsqueeze(1)).squeeze(1)
+                n_a = model(ns).argmax(1)
+                m_n_q = target_net(ns).gather(1, n_a.unsqueeze(1)).squeeze(1)
+                t = r + (1 - d.float()) * 0.99 * m_n_q
+                val_loss += criterion(q_v, t).item()
 
-            total_loss  += loss.item()
-            q_vals_list.append(q_vals.mean().item())
-            target_list.append(target.mean().item())
-            reward_list.append(r.mean().item())
+        avg_train = train_loss / len(train_loader)
+        avg_val = val_loss / len(val_loader)
+        scheduler.step(avg_val)
 
-        avg_loss   = total_loss / num_batches
-        avg_q      = sum(q_vals_list) / len(q_vals_list)
-        avg_target = sum(target_list) / len(target_list)
-        avg_reward = sum(reward_list) / len(reward_list)
+                # --- after computing avg_val ---
+        # smoothing + robust early stopping
+        min_delta = 1e-4            # require at least this improvement
+        ema_alpha = 0.25            # smoothing factor for val loss (0.0..1.0)
+        if epoch == 0:
+            smoothed_val = avg_val
+        else:
+            smoothed_val = ema_alpha * avg_val + (1 - ema_alpha) * smoothed_val
 
-        print(
-            f"Epoch {epoch+1:02d} | "
-            f"Loss: {avg_loss:.6f} | "
-            f"Avg Q: {avg_q:.4f} | "
-            f"Avg Target: {avg_target:.4f} | "
-            f"Avg Reward: {avg_reward:.4f}"
-        )
+        # Use smoothed_val for early stopping decisions
+        if smoothed_val + min_delta < best_val_loss:
+            best_val_loss = smoothed_val
+            patience_counter = 0
+            torch.save(model.state_dict(), MODEL_PATH)
+            status = " [MODEL SAVED]"
+        else:
+            patience_counter += 1
+            status = f" [Patience {patience_counter}/{max_patience}]"
 
-    torch.save(model.state_dict(), MODEL_PATH)
-    print(f"Trening završen. Model snimljen u {MODEL_PATH}")
+        # Soft update target mreže
+        for tp, mp in zip(target_net.parameters(), model.parameters()):
+            tp.data.copy_(0.005 * mp.data + 0.995 * tp.data)
 
+        print(f"Epoch {epoch+1:02d} | Train Loss: {avg_train:.6f} | Val Loss: {avg_val:.6f} | Smoothed Val: {smoothed_val:.6f}{status}")
+
+        if patience_counter >= max_patience:
+            print("Early stopping aktiviran.")
+            break
 
 if __name__ == "__main__":
     train()

@@ -37,7 +37,7 @@ CONFIG = {
         "traffic_density": 0.3,
         "num_scenarios": 1,
         "start_seed": 0,
-        "map": "CCC",  # Straight, rOundabout, Curve
+        "map": "SCS",  # Straight, rOundabout, Curve
         "accident_prob": 0.0,
         "decision_repeat": 1,
     },
